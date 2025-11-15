@@ -1,0 +1,25 @@
+{
+  "name": "photoshop-print-layout-plugin",
+  "version": "1.0.0",
+  "description": "UXP плагин для Adobe Photoshop - управление раскладкой принтов из XLSX таблиц",
+  "main": "index.js",
+  "scripts": {
+    "build": "echo 'Building plugin...'",
+    "package": "uxp plugin package"
+  },
+  "keywords": [
+    "photoshop",
+    "uxp",
+    "plugin",
+    "print-layout",
+    "xlsx"
+  ],
+  "author": "golovasya",
+  "license": "MIT",
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/photoshop": "^0.0.10"
+  }
+}
