@@ -1,0 +1,11 @@
+Скачайте библиотеку SheetJS:
+
+1. Перейдите на https://cdn.sheetjs.com/
+2. Выберите последнюю версию
+3. Скачайте файл xlsx.full.min.js
+4. Поместите его в эту папку (lib/)
+
+Прямая ссылка (на момент создания):
+https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js
+
+БЕЗ ЭТОГО ФАЙЛА ПЛАГИН НЕ БУДЕТ РАБОТАТЬ!

@@ -1,22 +1,19 @@
 {
-  "manifestVersion": 5,
   "id": "com.golovasya.printlayout",
   "name": "Print Layout Manager",
   "version": "1.0.0",
   "main": "index.html",
+  "manifestVersion": 5,
   "host": [
     {
       "app": "PS",
-      "minVersion": "22.0.0",
-      "data": {
-        "apiVersion": 2
-      }
+      "minVersion": "24.0.0"
     }
   ],
   "entrypoints": [
     {
       "type": "panel",
-      "id": "printlayout",
+      "id": "printLayoutPanel",
       "label": {
         "default": "Print Layout Manager"
       },
@@ -30,26 +27,34 @@
       },
       "preferredDockedSize": {
         "width": 400,
-        "height": 700
+        "height": 600
       },
       "preferredFloatingSize": {
         "width": 450,
-        "height": 750
+        "height": 700
       }
+    }
+  ],
+  "icons": [
+    {
+      "width": 23,
+      "height": 23,
+      "path": "icons/icon-light.png",
+      "scale": [1, 2],
+      "theme": ["lightest", "light", "medium"]
+    },
+    {
+      "width": 23,
+      "height": 23,
+      "path": "icons/icon-dark.png",
+      "scale": [1, 2],
+      "theme": ["darkest", "dark"]
     }
   ],
   "requiredPermissions": [
     "localFileSystem",
     "launchProcess",
     "network",
-    "enableAddon",
     "allowCodeGenerationFromStrings"
-  ],
-  "icons": [
-    {
-      "width": 48,
-      "height": 48,
-      "path": "icons/icon.png"
-    }
   ]
 }

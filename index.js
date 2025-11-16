@@ -1,377 +1,502 @@
-const { app, core } = require('photoshop');
-const { storage, entrypoints } = require('uxp');
-const fs = storage.localFileSystem;
+// =====================================================
+// Print Layout Manager - UXP Plugin for Photoshop
+// =====================================================
 
-// Глобальное состояние
-let printsData = [];
+const { app } = require('photoshop');
+const { storage, localFileSystem } = require('uxp').storage;
+const fs = require('uxp').storage.localFileSystem;
+
+// Глобальные переменные
+let tableData = [];
+let currentFile = null;
 let selectedPrintIndex = null;
-let xlsxFilePath = null;
+let layerToPrintMap = new Map(); // Соответствие слоёв к данным таблицы
+let printToLayerMap = new Map(); // Обратное соответствие
 
-// Инициализация при загрузке панели
-entrypoints.setup({
-    panels: {
-        printlayout: {
-            create() {
-                console.log('Print Layout Manager: Panel created');
-                initializeUI();
-            },
-            show() {
-                console.log('Print Layout Manager: Panel shown');
-                setupLayerSelectionListener();
-            },
-            hide() {
-                console.log('Print Layout Manager: Panel hidden');
-            }
-        }
-    }
-});
+// Элементы UI
+let loadXlsxBtn, runScriptBtn, clearFileBtn;
+let fileInfo, fileName, printsList, printDetails;
+let searchInput, statusText, printCount;
+let detailArticle, detailSize, detailColor, mockupImage;
+let physicalWidth, physicalHeight, applySizeBtn;
 
-function initializeUI() {
-    const loadXlsxBtn = document.getElementById('loadXlsxBtn');
-    const runScriptBtn = document.getElementById('runScriptBtn');
+// =====================================================
+// Инициализация
+// =====================================================
 
+function init() {
+    // Получаем элементы
+    loadXlsxBtn = document.getElementById('loadXlsxBtn');
+    runScriptBtn = document.getElementById('runScriptBtn');
+    clearFileBtn = document.getElementById('clearFileBtn');
+    fileInfo = document.getElementById('fileInfo');
+    fileName = document.getElementById('fileName');
+    printsList = document.getElementById('printsList');
+    printDetails = document.getElementById('printDetails');
+    searchInput = document.getElementById('searchInput');
+    statusText = document.getElementById('statusText');
+    printCount = document.getElementById('printCount');
+    
+    detailArticle = document.getElementById('detailArticle');
+    detailSize = document.getElementById('detailSize');
+    detailColor = document.getElementById('detailColor');
+    mockupImage = document.getElementById('mockupImage');
+    physicalWidth = document.getElementById('physicalWidth');
+    physicalHeight = document.getElementById('physicalHeight');
+    applySizeBtn = document.getElementById('applySizeBtn');
+
+    // Привязываем обработчики
     loadXlsxBtn.addEventListener('click', loadXlsxFile);
     runScriptBtn.addEventListener('click', runLayoutScript);
+    clearFileBtn.addEventListener('click', clearFile);
+    searchInput.addEventListener('input', filterPrints);
+    applySizeBtn.addEventListener('click', applyPhysicalSize);
 
-    showStatus('Готов к работе', 'success');
+    // Проверяем открытый документ
+    checkDocument();
+    
+    // Обновляем список слоёв
+    refreshPrintsList();
+    
+    updateStatus('Плагин готов к работе');
 }
 
+// =====================================================
 // Загрузка XLSX файла
+// =====================================================
+
 async function loadXlsxFile() {
     try {
-        showStatus('Выбор файла...', '');
+        updateStatus('Выбор файла...');
         
         const file = await fs.getFileForOpening({
             types: ['xlsx', 'xls']
         });
 
         if (!file) {
-            showStatus('Файл не выбран', 'error');
+            updateStatus('Выбор файла отменён');
             return;
         }
 
-        xlsxFilePath = file.nativePath;
-        showStatus('Чтение файла...', '');
-
-        // Чтение файла как ArrayBuffer
-        const fileData = await file.read({ format: storage.formats.binary });
+        updateStatus('Чтение файла...');
         
-        // Парсинг XLSX с помощью SheetJS
-        const workbook = XLSX.read(fileData, { type: 'array' });
+        // Читаем файл как ArrayBuffer
+        const arrayBuffer = await file.read({ format: storage.formats.binary });
+        
+        // Парсим XLSX с помощью SheetJS
+        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+        
+        // Берём первый лист
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        
+        // Конвертируем в JSON
         const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
-
-        // Обработка данных (пропускаем заголовок)
-        printsData = [];
-        for (let i = 1; i < jsonData.length; i++) {
-            const row = jsonData[i];
-            if (!row[1] && !row[5]) continue; // Пропускаем пустые строки
-
-            printsData.push({
-                index: i - 1,
-                photo: row[0] || '', // Столбец A - Фото
-                size: row[1] || '', // Столбец B - Размер
-                orderId: row[2] || '', // Столбец C - ID заказа
-                name: row[3] || '', // Столбец D - Наименование
-                color: row[4] || '', // Столбец E - Цвет
-                article: row[5] || '', // Столбец F - Артикул
-                realSize: extractRealSize(row[1]), // Реальный размер в мм
-                layerId: null // Будет заполнено после раскладки
-            });
-        }
-
-        displayFileInfo(file.name, printsData.length);
-        renderPrintsList();
-        showStatus(`Загружено принтов: ${printsData.length}`, 'success');
-
+        
+        // Обрабатываем данные
+        parseTableData(jsonData);
+        
+        currentFile = file;
+        fileName.textContent = file.name;
+        fileInfo.classList.remove('hidden');
+        runScriptBtn.disabled = false;
+        
+        updateStatus(`Загружено ${tableData.length} записей из ${file.name}`);
+        
+        // Обновляем список
+        refreshPrintsList();
+        
     } catch (error) {
-        console.error('Error loading XLSX:', error);
-        showStatus(`Ошибка: ${error.message}`, 'error');
+        console.error('Ошибка загрузки XLSX:', error);
+        updateStatus('Ошибка: ' + error.message);
+        showAlert('Ошибка загрузки файла', error.message);
     }
 }
 
-// Извлечение реального размера из строки размера
-function extractRealSize(sizeStr) {
-    if (!sizeStr) return '200x250';
+// =====================================================
+// Парсинг данных таблицы
+// =====================================================
+
+function parseTableData(jsonData) {
+    tableData = [];
     
-    // Для детских размеров (122-152) и взрослых (XS-6XL)
-    const childSizes = {
-        '122': '190x220',
-        '128': '200x230',
-        '134': '210x240',
-        '140': '220x250',
-        '146': '230x260',
-        '152': '240x270'
-    };
-
-    const adultSizes = {
-        'XS': '200x250',
-        'S': '210x260',
-        'M': '220x270',
-        'L': '230x280',
-        'XL': '240x290',
-        '2XL': '250x300',
-        '3XL': '260x310',
-        '4XL': '270x320',
-        '5XL': '280x330',
-        '6XL': '290x340'
-    };
-
-    // Извлекаем размер из строки типа "XS (40-42)" или "140"
-    const match = sizeStr.match(/([XS0-9]+)/);
-    if (match) {
-        const size = match[1];
-        return childSizes[size] || adultSizes[size] || '200x250';
+    // Пропускаем заголовок (первая строка)
+    for (let i = 1; i < jsonData.length; i++) {
+        const row = jsonData[i];
+        
+        if (!row || row.length === 0) continue;
+        
+        const printData = {
+            rowIndex: i,
+            photo: row[0] || null,           // Колонка A (индекс 0) - Фото
+            size: row[1] || 'Unknown',       // Колонка B (индекс 1) - Размер  
+            orderId: row[2] || '',           // Колонка C (индекс 2) - ID заказа
+            name: row[3] || '',              // Колонка D (индекс 3) - Наименование
+            color: row[4] || '',             // Колонка E (индекс 4) - Цвет
+            article: row[5] || 'Unknown',    // Колонка F (индекс 5) - Артикул продавца
+            physicalWidth: null,
+            physicalHeight: null,
+            layerId: null                    // Будет заполнено при сопоставлении со слоями
+        };
+        
+        tableData.push(printData);
     }
-
-    return '200x250';
+    
+    console.log('Parsed table data:', tableData.length, 'records');
 }
 
-// Отображение информации о файле
-function displayFileInfo(fileName, count) {
-    const fileInfo = document.getElementById('fileInfo');
-    fileInfo.style.display = 'block';
-    fileInfo.textContent = `📄 ${fileName} — ${count} позиций`;
+// =====================================================
+// Очистка файла
+// =====================================================
+
+function clearFile() {
+    currentFile = null;
+    tableData = [];
+    fileName.textContent = 'Файл не загружен';
+    fileInfo.classList.add('hidden');
+    runScriptBtn.disabled = true;
+    refreshPrintsList();
+    updateStatus('Файл очищен');
 }
 
-// Рендеринг списка принтов
-function renderPrintsList() {
-    const printsList = document.getElementById('printsList');
+// =====================================================
+// Запуск скрипта раскладки
+// =====================================================
+
+async function runLayoutScript() {
+    try {
+        updateStatus('Запуск скрипта раскладки...');
+        
+        // Здесь должна быть интеграция с твоим скриптом Сборщик v.3.5
+        // Для демонстрации просто показываем сообщение
+        
+        await showAlert(
+            'Запуск скрипта',
+            'Интеграция со скриптом "Сборщик v.3.5" будет добавлена.\n\n' +
+            'Скрипт должен:\n' +
+            '1. Разместить принты на холсте\n' +
+            '2. Присвоить слоям имена с артикулами\n' +
+            '3. Вернуть управление плагину для синхронизации'
+        );
+        
+        // После выполнения скрипта обновляем список
+        refreshPrintsList();
+        
+        updateStatus('Скрипт выполнен');
+        
+    } catch (error) {
+        console.error('Ошибка выполнения скрипта:', error);
+        updateStatus('Ошибка: ' + error.message);
+    }
+}
+
+// =====================================================
+// Обновление списка принтов
+// =====================================================
+
+async function refreshPrintsList() {
     printsList.innerHTML = '';
-
-    printsData.forEach((print, index) => {
-        const item = createPrintItem(print, index);
-        printsList.appendChild(item);
-    });
+    
+    if (!app.activeDocument) {
+        printsList.innerHTML = '<div class="hint" style="padding: 20px; text-align: center;">Нет открытого документа</div>';
+        printCount.textContent = '0';
+        return;
+    }
+    
+    try {
+        const doc = app.activeDocument;
+        const layers = doc.layers;
+        
+        // Создаём соответствие между слоями и данными таблицы
+        layerToPrintMap.clear();
+        printToLayerMap.clear();
+        
+        let matchCount = 0;
+        
+        // Перебираем слои
+        for (let i = 0; i < layers.length; i++) {
+            const layer = layers[i];
+            
+            // Пропускаем фоновый слой
+            if (layer.isBackgroundLayer) continue;
+            
+            // Ищем соответствие по артикулу в имени слоя
+            const layerName = layer.name;
+            
+            for (let j = 0; j < tableData.length; j++) {
+                const printData = tableData[j];
+                
+                // Проверяем, содержит ли имя слоя артикул
+                if (layerName.includes(printData.article)) {
+                    // Сохраняем ID слоя
+                    printData.layerId = layer.id;
+                    
+                    // Получаем размеры слоя в мм
+                    try {
+                        const bounds = layer.bounds;
+                        printData.physicalWidth = Math.round((bounds.right - bounds.left) * 0.352778 * 10) / 10; // px to mm
+                        printData.physicalHeight = Math.round((bounds.bottom - bounds.top) * 0.352778 * 10) / 10;
+                    } catch (err) {
+                        console.error('Error getting layer bounds:', err);
+                    }
+                    
+                    layerToPrintMap.set(layer.id, printData);
+                    printToLayerMap.set(j, layer.id);
+                    matchCount++;
+                    break;
+                }
+            }
+        }
+        
+        printCount.textContent = matchCount.toString();
+        
+        // Отображаем только сопоставленные принты
+        const matchedPrints = tableData.filter(p => p.layerId !== null);
+        
+        if (matchedPrints.length === 0) {
+            printsList.innerHTML = '<div class="hint" style="padding: 20px; text-align: center;">Нет сопоставленных слоёв.\nСлои должны содержать артикулы в названии.</div>';
+            return;
+        }
+        
+        matchedPrints.forEach((printData, index) => {
+            const item = createPrintItem(printData, index);
+            printsList.appendChild(item);
+        });
+        
+        updateStatus(`Найдено ${matchCount} принтов на холсте`);
+        
+    } catch (error) {
+        console.error('Error refreshing prints list:', error);
+        printsList.innerHTML = '<div class="hint" style="padding: 20px; text-align: center; color: red;">Ошибка: ' + error.message + '</div>';
+    }
 }
 
+// =====================================================
 // Создание элемента принта
-function createPrintItem(print, index) {
-    const div = document.createElement('div');
-    div.className = 'print-item';
-    div.dataset.index = index;
+// =====================================================
 
-    // Thumbnail
+function createPrintItem(printData, index) {
+    const item = document.createElement('div');
+    item.className = 'print-item';
+    item.dataset.index = index;
+    item.dataset.layerId = printData.layerId;
+    
+    // Миниатюра (пока заглушка)
     const thumbnail = document.createElement('div');
     thumbnail.className = 'print-thumbnail';
-    thumbnail.textContent = 'IMG';
-    // TODO: загрузка реальных превью из таблицы если есть URL
-
-    // Info
+    thumbnail.innerHTML = '<span style="font-size: 20px;">🖼️</span>';
+    
+    // Информация
     const info = document.createElement('div');
     info.className = 'print-info';
-
-    // Размер
-    const sizeRow = document.createElement('div');
-    sizeRow.className = 'print-info-row';
-    sizeRow.innerHTML = `
-        <span class="print-label">Размер:</span>
-        <span class="print-value">${print.size}</span>
-    `;
-
-    // Артикул
-    const articleRow = document.createElement('div');
-    articleRow.className = 'print-info-row';
-    articleRow.innerHTML = `
-        <span class="print-label">Артикул:</span>
-        <span class="print-value">${print.article}</span>
-    `;
-
-    // Реальный размер (редактируемый)
-    const realSizeRow = document.createElement('div');
-    realSizeRow.className = 'print-info-row';
-    const sizeInput = document.createElement('input');
-    sizeInput.type = 'text';
-    sizeInput.className = 'size-input';
-    sizeInput.value = print.realSize;
-    sizeInput.addEventListener('change', (e) => {
-        updatePrintSize(index, e.target.value);
-    });
-
-    realSizeRow.innerHTML = `<span class="print-label">Размер на листе:</span>`;
-    realSizeRow.appendChild(sizeInput);
-
-    info.appendChild(sizeRow);
-    info.appendChild(articleRow);
-    info.appendChild(realSizeRow);
-
-    div.appendChild(thumbnail);
-    div.appendChild(info);
-
-    // Клик для выделения
-    div.addEventListener('click', () => {
-        selectPrintInUI(index);
-        selectLayerInPhotoshop(print.layerId);
-    });
-
-    return div;
+    
+    const article = document.createElement('div');
+    article.className = 'print-article';
+    article.textContent = printData.article;
+    
+    const meta = document.createElement('div');
+    meta.className = 'print-meta';
+    
+    const sizeBadge = document.createElement('span');
+    sizeBadge.className = 'print-size-badge';
+    sizeBadge.textContent = printData.size;
+    
+    const dimensions = document.createElement('span');
+    if (printData.physicalWidth && printData.physicalHeight) {
+        dimensions.textContent = `${printData.physicalWidth}×${printData.physicalHeight} мм`;
+    } else {
+        dimensions.textContent = 'Размер не определён';
+    }
+    
+    meta.appendChild(sizeBadge);
+    meta.appendChild(dimensions);
+    
+    info.appendChild(article);
+    info.appendChild(meta);
+    
+    item.appendChild(thumbnail);
+    item.appendChild(info);
+    
+    // Обработчик клика
+    item.addEventListener('click', () => selectPrint(index, printData));
+    
+    return item;
 }
 
-// Выделение принта в UI
-function selectPrintInUI(index) {
-    // Снимаем предыдущее выделение
+// =====================================================
+// Выбор принта
+// =====================================================
+
+async function selectPrint(index, printData) {
+    selectedPrintIndex = index;
+    
+    // Обновляем UI
     document.querySelectorAll('.print-item').forEach(item => {
         item.classList.remove('selected');
     });
-
-    // Выделяем новый
-    const item = document.querySelector(`[data-index="${index}"]`);
-    if (item) {
-        item.classList.add('selected');
-        selectedPrintIndex = index;
+    
+    const selectedItem = document.querySelector(`[data-index="${index}"]`);
+    if (selectedItem) {
+        selectedItem.classList.add('selected');
     }
-}
-
-// Выделение слоя в Photoshop
-async function selectLayerInPhotoshop(layerId) {
-    if (!layerId) return;
-
+    
+    // Показываем детали
+    showPrintDetails(printData);
+    
+    // Выделяем слой в Photoshop
     try {
-        await core.executeAsModal(async () => {
-            const doc = app.activeDocument;
-            const layer = doc.layers.find(l => l.id === layerId);
+        if (printData.layerId && app.activeDocument) {
+            const layer = app.activeDocument.layers.find(l => l.id === printData.layerId);
             if (layer) {
-                doc.activeLayers = [layer];
+                app.activeDocument.activeLayers = [layer];
+                updateStatus(`Выбран: ${printData.article}`);
             }
-        });
+        }
     } catch (error) {
         console.error('Error selecting layer:', error);
     }
 }
 
-// Слушатель выделения слоев в Photoshop
-function setupLayerSelectionListener() {
-    // TODO: Реализовать через события Photoshop API
-    // В UXP пока нет прямых событий изменения выделения,
-    // можно использовать периодическую проверку или notifier
-}
+// =====================================================
+// Показ деталей принта
+// =====================================================
 
-// Обновление размера принта
-async function updatePrintSize(index, newSize) {
-    printsData[index].realSize = newSize;
+function showPrintDetails(printData) {
+    printDetails.classList.remove('hidden');
     
-    // Применяем новый размер к слою в Photoshop
-    const layerId = printsData[index].layerId;
-    if (!layerId) return;
-
-    try {
-        const [width, height] = newSize.split('x').map(s => parseFloat(s));
-        if (!width || !height) {
-            showStatus('Неверный формат размера (используйте ШИРИНАxВЫСОТА)', 'error');
-            return;
-        }
-
-        await core.executeAsModal(async () => {
-            const doc = app.activeDocument;
-            const layer = doc.layers.find(l => l.id === layerId);
-            
-            if (layer) {
-                // Конвертируем мм в пиксели (при 200 DPI)
-                const dpi = doc.resolution;
-                const widthPx = (width / 25.4) * dpi;
-                const heightPx = (height / 25.4) * dpi;
-
-                // Изменяем размер слоя
-                const bounds = layer.bounds;
-                const currentWidth = bounds.right - bounds.left;
-                const currentHeight = bounds.bottom - bounds.top;
-
-                const scaleX = (widthPx / currentWidth) * 100;
-                const scaleY = (heightPx / currentHeight) * 100;
-
-                layer.scale(scaleX, scaleY);
-                
-                showStatus(`Размер обновлен: ${newSize} мм`, 'success');
-            }
-        });
-    } catch (error) {
-        console.error('Error updating layer size:', error);
-        showStatus(`Ошибка изменения размера: ${error.message}`, 'error');
-    }
+    detailArticle.textContent = printData.article;
+    detailSize.textContent = printData.size;
+    detailColor.textContent = printData.color || 'Не указан';
+    
+    physicalWidth.value = printData.physicalWidth || '';
+    physicalHeight.value = printData.physicalHeight || '';
+    
+    // Мокап - пока заглушка
+    mockupImage.src = '';
+    mockupImage.alt = 'Мокап недоступен';
 }
 
-// Запуск скрипта раскладки
-async function runLayoutScript() {
+// =====================================================
+// Применение физического размера
+// =====================================================
+
+async function applyPhysicalSize() {
+    if (selectedPrintIndex === null) {
+        await showAlert('Ошибка', 'Сначала выберите принт из списка');
+        return;
+    }
+    
+    const width = parseFloat(physicalWidth.value);
+    const height = parseFloat(physicalHeight.value);
+    
+    if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
+        await showAlert('Ошибка', 'Введите корректные размеры (мм)');
+        return;
+    }
+    
     try {
-        showStatus('Запуск скрипта раскладки...', '');
-
-        // Выбор файла скрипта
-        const scriptFile = await fs.getFileForOpening({
-            types: ['jsx', 'js']
-        });
-
-        if (!scriptFile) {
-            showStatus('Скрипт не выбран', 'error');
-            return;
-        }
-
-        // Чтение и выполнение скрипта
-        const scriptContent = await scriptFile.read({ format: storage.formats.utf8 });
+        const printData = tableData.find(p => p.layerId !== null)[selectedPrintIndex];
         
-        await core.executeAsModal(async () => {
-            // Выполнение ExtendScript в Photoshop
-            await app.batchPlay([{
-                _obj: 'AdobeScriptAutomation Scripts',
-                javaScriptMessage: scriptContent
-            }], {});
-        });
-
-        // После выполнения скрипта связываем слои с данными таблицы
-        await linkLayersToData();
-
-        showStatus('Скрипт выполнен успешно', 'success');
-
+        if (!printData || !printData.layerId) {
+            await showAlert('Ошибка', 'Слой не найден');
+            return;
+        }
+        
+        const doc = app.activeDocument;
+        const layer = doc.layers.find(l => l.id === printData.layerId);
+        
+        if (!layer) {
+            await showAlert('Ошибка', 'Слой не найден в документе');
+            return;
+        }
+        
+        // Конвертируем мм в пиксели (72 DPI)
+        const widthPx = width / 0.352778;
+        const heightPx = height / 0.352778;
+        
+        // Получаем текущие размеры
+        const bounds = layer.bounds;
+        const currentWidth = bounds.right - bounds.left;
+        const currentHeight = bounds.bottom - bounds.top;
+        
+        // Вычисляем масштаб
+        const scaleX = (widthPx / currentWidth) * 100;
+        const scaleY = (heightPx / currentHeight) * 100;
+        
+        // Применяем масштабирование
+        await layer.scale(scaleX, scaleY);
+        
+        // Обновляем данные
+        printData.physicalWidth = width;
+        printData.physicalHeight = height;
+        
+        updateStatus(`Размер изменён: ${width}×${height} мм`);
+        
+        // Обновляем список
+        refreshPrintsList();
+        
     } catch (error) {
-        console.error('Error running script:', error);
-        showStatus(`Ошибка выполнения скрипта: ${error.message}`, 'error');
+        console.error('Error applying size:', error);
+        await showAlert('Ошибка', 'Не удалось применить размер: ' + error.message);
     }
 }
 
-// Связывание слоев с данными из таблицы
-async function linkLayersToData() {
-    try {
-        await core.executeAsModal(async () => {
-            const doc = app.activeDocument;
-            const layers = doc.layers;
+// =====================================================
+// Фильтрация принтов
+// =====================================================
 
-            // Проходим по всем слоям и пытаемся связать с данными по артикулу
-            layers.forEach(layer => {
-                const layerName = layer.name;
-                
-                // Ищем соответствие по артикулу в имени слоя
-                const matchedPrint = printsData.find(p => 
-                    !p.layerId && layerName.includes(p.article)
-                );
-
-                if (matchedPrint) {
-                    matchedPrint.layerId = layer.id;
-                }
-            });
-        });
-
-        renderPrintsList(); // Обновляем UI
-    } catch (error) {
-        console.error('Error linking layers:', error);
-    }
-}
-
-// Показ статуса
-function showStatus(message, type) {
-    const status = document.getElementById('status');
-    status.style.display = 'block';
-    status.textContent = message;
-    status.className = 'status';
+function filterPrints() {
+    const query = searchInput.value.toLowerCase();
     
-    if (type === 'error') {
-        status.classList.add('error');
-    } else if (type === 'success') {
-        status.classList.add('success');
-    }
+    document.querySelectorAll('.print-item').forEach(item => {
+        const article = item.querySelector('.print-article').textContent.toLowerCase();
+        
+        if (article.includes(query)) {
+            item.style.display = 'flex';
+        } else {
+            item.style.display = 'none';
+        }
+    });
+}
 
-    // Автоскрытие через 5 секунд
-    if (type) {
-        setTimeout(() => {
-            status.style.display = 'none';
-        }, 5000);
+// =====================================================
+// Проверка документа
+// =====================================================
+
+function checkDocument() {
+    if (!app.activeDocument) {
+        updateStatus('Нет открытого документа');
     }
+}
+
+// =====================================================
+// Утилиты
+// =====================================================
+
+function updateStatus(message) {
+    statusText.textContent = message;
+    console.log('Status:', message);
+}
+
+async function showAlert(title, message) {
+    const { app: uxpApp } = require('photoshop');
+    const options = {
+        title: title,
+        message: message
+    };
+    
+    try {
+        await uxpApp.showAlert(message);
+    } catch (e) {
+        console.log(title + ': ' + message);
+    }
+}
+
+// =====================================================
+// Запуск при загрузке
+// =====================================================
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
 }
