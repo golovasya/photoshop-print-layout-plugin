@@ -3,15 +3,13 @@
 // =====================================================
 
 const { app } = require('photoshop');
-const { storage, localFileSystem } = require('uxp').storage;
-const fs = require('uxp').storage.localFileSystem;
 
 // Глобальные переменные
 let tableData = [];
 let currentFile = null;
 let selectedPrintIndex = null;
-let layerToPrintMap = new Map(); // Соответствие слоёв к данным таблицы
-let printToLayerMap = new Map(); // Обратное соответствие
+let layerToPrintMap = new Map();
+let printToLayerMap = new Map();
 
 // Элементы UI
 let loadXlsxBtn, runScriptBtn, clearFileBtn;
@@ -25,7 +23,6 @@ let physicalWidth, physicalHeight, applySizeBtn;
 // =====================================================
 
 function init() {
-    // Получаем элементы
     loadXlsxBtn = document.getElementById('loadXlsxBtn');
     runScriptBtn = document.getElementById('runScriptBtn');
     clearFileBtn = document.getElementById('clearFileBtn');
@@ -45,20 +42,23 @@ function init() {
     physicalHeight = document.getElementById('physicalHeight');
     applySizeBtn = document.getElementById('applySizeBtn');
 
-    // Привязываем обработчики
     loadXlsxBtn.addEventListener('click', loadXlsxFile);
     runScriptBtn.addEventListener('click', runLayoutScript);
     clearFileBtn.addEventListener('click', clearFile);
     searchInput.addEventListener('input', filterPrints);
     applySizeBtn.addEventListener('click', applyPhysicalSize);
 
-    // Проверяем открытый документ
+    // Проверяем, что XLSX библиотека загружена
+    if (typeof XLSX === 'undefined') {
+        updateStatus('ОШИБКА: Библиотека XLSX не загружена!');
+        console.error('XLSX library not found! Make sure lib/xlsx.full.min.js exists and is loaded in index.html');
+    } else {
+        console.log('XLSX library loaded successfully');
+        updateStatus('Плагин готов к работе');
+    }
+
     checkDocument();
-    
-    // Обновляем список слоёв
     refreshPrintsList();
-    
-    updateStatus('Плагин готов к работе');
 }
 
 // =====================================================
@@ -67,7 +67,15 @@ function init() {
 
 async function loadXlsxFile() {
     try {
+        // Проверяем наличие библиотеки
+        if (typeof XLSX === 'undefined') {
+            updateStatus('ОШИБКА: Библиотека XLSX не загружена');
+            return;
+        }
+
         updateStatus('Выбор файла...');
+        
+        const fs = require('uxp').storage.localFileSystem;
         
         const file = await fs.getFileForOpening({
             types: ['xlsx', 'xls']
@@ -80,19 +88,23 @@ async function loadXlsxFile() {
 
         updateStatus('Чтение файла...');
         
-        // Читаем файл как ArrayBuffer
-        const arrayBuffer = await file.read({ format: storage.formats.binary });
+        const arrayBuffer = await file.read();
         
-        // Парсим XLSX с помощью SheetJS
-        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+        console.log('File size:', arrayBuffer.byteLength);
         
-        // Берём первый лист
+        if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+            throw new Error('Файл пустой');
+        }
+        
+        const workbook = XLSX.read(new Uint8Array(arrayBuffer), { type: 'array' });
+        
+        console.log('Sheets:', workbook.SheetNames);
+        
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        
-        // Конвертируем в JSON
         const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
         
-        // Обрабатываем данные
+        console.log('Rows:', jsonData.length);
+        
         parseTableData(jsonData);
         
         currentFile = file;
@@ -101,14 +113,11 @@ async function loadXlsxFile() {
         runScriptBtn.disabled = false;
         
         updateStatus(`Загружено ${tableData.length} записей из ${file.name}`);
-        
-        // Обновляем список
         refreshPrintsList();
         
     } catch (error) {
-        console.error('Ошибка загрузки XLSX:', error);
+        console.error('ОШИБКА:', error);
         updateStatus('Ошибка: ' + error.message);
-        showAlert('Ошибка загрузки файла', error.message);
     }
 }
 
@@ -119,7 +128,6 @@ async function loadXlsxFile() {
 function parseTableData(jsonData) {
     tableData = [];
     
-    // Пропускаем заголовок (первая строка)
     for (let i = 1; i < jsonData.length; i++) {
         const row = jsonData[i];
         
@@ -127,21 +135,21 @@ function parseTableData(jsonData) {
         
         const printData = {
             rowIndex: i,
-            photo: row[0] || null,           // Колонка A (индекс 0) - Фото
-            size: row[1] || 'Unknown',       // Колонка B (индекс 1) - Размер  
-            orderId: row[2] || '',           // Колонка C (индекс 2) - ID заказа
-            name: row[3] || '',              // Колонка D (индекс 3) - Наименование
-            color: row[4] || '',             // Колонка E (индекс 4) - Цвет
-            article: row[5] || 'Unknown',    // Колонка F (индекс 5) - Артикул продавца
+            photo: row[0] || null,
+            size: row[1] || 'Unknown',
+            orderId: row[2] || '',
+            name: row[3] || '',
+            color: row[4] || '',
+            article: row[5] || 'Unknown',
             physicalWidth: null,
             physicalHeight: null,
-            layerId: null                    // Будет заполнено при сопоставлении со слоями
+            layerId: null
         };
         
         tableData.push(printData);
     }
     
-    console.log('Parsed table data:', tableData.length, 'records');
+    console.log('Parsed records:', tableData.length);
 }
 
 // =====================================================
@@ -166,22 +174,42 @@ async function runLayoutScript() {
     try {
         updateStatus('Запуск скрипта раскладки...');
         
-        // Здесь должна быть интеграция с твоим скриптом Сборщик v.3.5
-        // Для демонстрации просто показываем сообщение
+        if (tableData.length === 0) {
+            updateStatus('Сначала загрузите таблицу XLSX');
+            return;
+        }
         
-        await showAlert(
-            'Запуск скрипта',
-            'Интеграция со скриптом "Сборщик v.3.5" будет добавлена.\n\n' +
-            'Скрипт должен:\n' +
-            '1. Разместить принты на холсте\n' +
-            '2. Присвоить слоям имена с артикулами\n' +
-            '3. Вернуть управление плагину для синхронизации'
-        );
+        const fs = require('uxp').storage.localFileSystem;
         
-        // После выполнения скрипта обновляем список
-        refreshPrintsList();
+        const scriptFile = await fs.getFileForOpening({
+            types: ['jsx']
+        });
         
-        updateStatus('Скрипт выполнен');
+        if (!scriptFile) {
+            updateStatus('Выбор скрипта отменён');
+            return;
+        }
+        
+        updateStatus('Выполнение скрипта...');
+        
+        const scriptContent = await scriptFile.read({ format: require('uxp').storage.formats.utf8 });
+        
+        const { executeAsModal } = require('photoshop').core;
+        
+        await executeAsModal(async () => {
+            const batchPlay = require('photoshop').action.batchPlay;
+            
+            await batchPlay([{
+                _obj: "AdobeScriptAutomation Scripts",
+                javaScriptMessage: scriptContent,
+                _options: { dialogOptions: "dontDisplay" }
+            }], {});
+        });
+        
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await refreshPrintsList();
+        
+        updateStatus('Скрипт выполнен успешно');
         
     } catch (error) {
         console.error('Ошибка выполнения скрипта:', error);
@@ -206,34 +234,27 @@ async function refreshPrintsList() {
         const doc = app.activeDocument;
         const layers = doc.layers;
         
-        // Создаём соответствие между слоями и данными таблицы
         layerToPrintMap.clear();
         printToLayerMap.clear();
         
         let matchCount = 0;
         
-        // Перебираем слои
         for (let i = 0; i < layers.length; i++) {
             const layer = layers[i];
             
-            // Пропускаем фоновый слой
             if (layer.isBackgroundLayer) continue;
             
-            // Ищем соответствие по артикулу в имени слоя
             const layerName = layer.name;
             
             for (let j = 0; j < tableData.length; j++) {
                 const printData = tableData[j];
                 
-                // Проверяем, содержит ли имя слоя артикул
                 if (layerName.includes(printData.article)) {
-                    // Сохраняем ID слоя
                     printData.layerId = layer.id;
                     
-                    // Получаем размеры слоя в мм
                     try {
                         const bounds = layer.bounds;
-                        printData.physicalWidth = Math.round((bounds.right - bounds.left) * 0.352778 * 10) / 10; // px to mm
+                        printData.physicalWidth = Math.round((bounds.right - bounds.left) * 0.352778 * 10) / 10;
                         printData.physicalHeight = Math.round((bounds.bottom - bounds.top) * 0.352778 * 10) / 10;
                     } catch (err) {
                         console.error('Error getting layer bounds:', err);
@@ -249,11 +270,10 @@ async function refreshPrintsList() {
         
         printCount.textContent = matchCount.toString();
         
-        // Отображаем только сопоставленные принты
         const matchedPrints = tableData.filter(p => p.layerId !== null);
         
         if (matchedPrints.length === 0) {
-            printsList.innerHTML = '<div class="hint" style="padding: 20px; text-align: center;">Нет сопоставленных слоёв.\nСлои должны содержать артикулы в названии.</div>';
+            printsList.innerHTML = '<div class="hint" style="padding: 20px; text-align: center;">Нет сопоставленных слоёв.<br>Слои должны содержать артикулы в названии.</div>';
             return;
         }
         
@@ -280,12 +300,10 @@ function createPrintItem(printData, index) {
     item.dataset.index = index;
     item.dataset.layerId = printData.layerId;
     
-    // Миниатюра (пока заглушка)
     const thumbnail = document.createElement('div');
     thumbnail.className = 'print-thumbnail';
     thumbnail.innerHTML = '<span style="font-size: 20px;">🖼️</span>';
     
-    // Информация
     const info = document.createElement('div');
     info.className = 'print-info';
     
@@ -316,7 +334,6 @@ function createPrintItem(printData, index) {
     item.appendChild(thumbnail);
     item.appendChild(info);
     
-    // Обработчик клика
     item.addEventListener('click', () => selectPrint(index, printData));
     
     return item;
@@ -329,7 +346,6 @@ function createPrintItem(printData, index) {
 async function selectPrint(index, printData) {
     selectedPrintIndex = index;
     
-    // Обновляем UI
     document.querySelectorAll('.print-item').forEach(item => {
         item.classList.remove('selected');
     });
@@ -339,10 +355,8 @@ async function selectPrint(index, printData) {
         selectedItem.classList.add('selected');
     }
     
-    // Показываем детали
     showPrintDetails(printData);
     
-    // Выделяем слой в Photoshop
     try {
         if (printData.layerId && app.activeDocument) {
             const layer = app.activeDocument.layers.find(l => l.id === printData.layerId);
@@ -370,7 +384,6 @@ function showPrintDetails(printData) {
     physicalWidth.value = printData.physicalWidth || '';
     physicalHeight.value = printData.physicalHeight || '';
     
-    // Мокап - пока заглушка
     mockupImage.src = '';
     mockupImage.alt = 'Мокап недоступен';
 }
@@ -381,7 +394,7 @@ function showPrintDetails(printData) {
 
 async function applyPhysicalSize() {
     if (selectedPrintIndex === null) {
-        await showAlert('Ошибка', 'Сначала выберите принт из списка');
+        updateStatus('Сначала выберите принт из списка');
         return;
     }
     
@@ -389,15 +402,15 @@ async function applyPhysicalSize() {
     const height = parseFloat(physicalHeight.value);
     
     if (isNaN(width) || isNaN(height) || width <= 0 || height <= 0) {
-        await showAlert('Ошибка', 'Введите корректные размеры (мм)');
+        updateStatus('Введите корректные размеры (мм)');
         return;
     }
     
     try {
-        const printData = tableData.find(p => p.layerId !== null)[selectedPrintIndex];
+        const printData = tableData.filter(p => p.layerId !== null)[selectedPrintIndex];
         
         if (!printData || !printData.layerId) {
-            await showAlert('Ошибка', 'Слой не найден');
+            updateStatus('Слой не найден');
             return;
         }
         
@@ -405,38 +418,32 @@ async function applyPhysicalSize() {
         const layer = doc.layers.find(l => l.id === printData.layerId);
         
         if (!layer) {
-            await showAlert('Ошибка', 'Слой не найден в документе');
+            updateStatus('Слой не найден в документе');
             return;
         }
         
-        // Конвертируем мм в пиксели (72 DPI)
         const widthPx = width / 0.352778;
         const heightPx = height / 0.352778;
         
-        // Получаем текущие размеры
         const bounds = layer.bounds;
         const currentWidth = bounds.right - bounds.left;
         const currentHeight = bounds.bottom - bounds.top;
         
-        // Вычисляем масштаб
         const scaleX = (widthPx / currentWidth) * 100;
         const scaleY = (heightPx / currentHeight) * 100;
         
-        // Применяем масштабирование
         await layer.scale(scaleX, scaleY);
         
-        // Обновляем данные
         printData.physicalWidth = width;
         printData.physicalHeight = height;
         
         updateStatus(`Размер изменён: ${width}×${height} мм`);
         
-        // Обновляем список
         refreshPrintsList();
         
     } catch (error) {
         console.error('Error applying size:', error);
-        await showAlert('Ошибка', 'Не удалось применить размер: ' + error.message);
+        updateStatus('Не удалось применить размер: ' + error.message);
     }
 }
 
@@ -475,20 +482,6 @@ function checkDocument() {
 function updateStatus(message) {
     statusText.textContent = message;
     console.log('Status:', message);
-}
-
-async function showAlert(title, message) {
-    const { app: uxpApp } = require('photoshop');
-    const options = {
-        title: title,
-        message: message
-    };
-    
-    try {
-        await uxpApp.showAlert(message);
-    } catch (e) {
-        console.log(title + ': ' + message);
-    }
 }
 
 // =====================================================

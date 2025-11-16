@@ -1,9 +1,9 @@
 {
+  "manifestVersion": 5,
   "id": "com.golovasya.printlayout",
   "name": "Print Layout Manager",
   "version": "1.0.0",
   "main": "index.html",
-  "manifestVersion": 5,
   "host": [
     {
       "app": "PS",
@@ -16,45 +16,15 @@
       "id": "printLayoutPanel",
       "label": {
         "default": "Print Layout Manager"
-      },
-      "minimumSize": {
-        "width": 350,
-        "height": 500
-      },
-      "maximumSize": {
-        "width": 800,
-        "height": 1200
-      },
-      "preferredDockedSize": {
-        "width": 400,
-        "height": 600
-      },
-      "preferredFloatingSize": {
-        "width": 450,
-        "height": 700
       }
     }
   ],
-  "icons": [
-    {
-      "width": 23,
-      "height": 23,
-      "path": "icons/icon-light.png",
-      "scale": [1, 2],
-      "theme": ["lightest", "light", "medium"]
+  "requiredPermissions": {
+    "localFileSystem": "request",
+    "clipboard": "readAndWrite",
+    "network": {
+      "domains": ["https://cdn.sheetjs.com"]
     },
-    {
-      "width": 23,
-      "height": 23,
-      "path": "icons/icon-dark.png",
-      "scale": [1, 2],
-      "theme": ["darkest", "dark"]
-    }
-  ],
-  "requiredPermissions": [
-    "localFileSystem",
-    "launchProcess",
-    "network",
-    "allowCodeGenerationFromStrings"
-  ]
+    "allowCodeGenerationFromStrings": true
+  }
 }
